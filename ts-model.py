@@ -4,6 +4,18 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+# ------------- HYPERPARAMTERS -------------
+
+N_CLASSES = 10000
+BATCH_SIZE = ...
+WINDOW_SIZE = 512
+EMBED_SIZE = 100
+N_BLOCKS = 6
+N_HEADS = 8
+HEAD_SIZE = 512
+LEARNING_RATE = 1e-3
+EPOCHS = ...
+
 # ----------------- DATA -----------------
 # STEP 1: Read in CSV file.
 # STEP 2: Extract the column with the temperature.
@@ -20,7 +32,8 @@ train_data = train_file['meantemp'].tolist()
 test_data = test_file['meantemp'].tolist()
 
 # STEP 3.
-WINDOW_SIZE = 512
+
+# Training data.
 train_data = np.array(train_data)
 train_examples = []
 for i in range(len(train_data) - WINDOW_SIZE + 1):
@@ -28,6 +41,7 @@ for i in range(len(train_data) - WINDOW_SIZE + 1):
 
 train_examples = np.array(train_examples)
 
+# Testing data.
 test_data = np.array(test_data)
 test_examples = []
 for i in range(len(test_data) - WINDOW_SIZE + 1):
@@ -41,69 +55,70 @@ test_examples /= np.sum(test_examples, axis=1, keepdims=True)
 
 # STEP 5.
 
-# Train data.
+# Training data.
 train_min = np.floor(np.min(train_examples)) - 1e-6
 train_max = np.ceil(np.max(train_examples))
+step_size = (train_max - train_min) / N_CLASSES
 
-NUM_BINS = 10000
-TRAIN_STEP_SIZE = (train_max - train_min) / NUM_BINS
-
-bins = np.flip(np.arange(start=train_max, stop=train_min, step=-TRAIN_STEP_SIZE))
+bins = np.flip(np.arange(start=train_max, stop=train_min, step=-step_size))
 quantized_train_examples = np.digitize(train_examples, bins)
 
-# Test data.
+# Testing data.
 test_min = np.floor(np.min(test_examples)) - 1e-6
 test_max = np.ceil(np.max(test_examples))
+step_size = (test_max - test_min) / N_CLASSES
 
-TEST_STEP_SIZE = (test_max - test_min) / NUM_BINS
-
-bins = np.flip(np.arange(start=test_max, stop=test_min, step=-TEST_STEP_SIZE))
+bins = np.flip(np.arange(start=test_max, stop=test_min, step=-step_size))
 quantized_test_examples = np.digitize(test_examples, bins)
 
-# ----------------- MODEL -----------------
-
-# HYPERPARAMETERS
-EMBED_SIZE = 100
-HEAD_SIZE = 32
-NUM_HEADS = 4
-NUM_BLOCKS = 10
+# ------------------------ MODEL ------------------------
 
 class AttentionHead(nn.Module):
 
-    def __init__(self, head_size):
+    def __init__(self, input_size, output_size, use_mask):
         super().__init__()
-        self.head_size = head_size
-        self.query_matrix = nn.Linear(EMBED_SIZE, head_size, bias=False)
-        self.key_matrix = nn.Linear(EMBED_SIZE, head_size, bias=False)
-        self.value_matrix = nn.Linear(EMBED_SIZE, head_size, bias=False)
+        self.query_matrix = nn.Linear(input_size, output_size, bias=False)
+        self.key_matrix = nn.Linear(input_size, output_size, bias=False)
+        self.value_matrix = nn.Linear(input_size, output_size, bias=False)
 
-    def forward(self, x):
-        # x has shape (BATCH_SIZE, WINDOW_SIZE, EMBED_SIZE).
-        queries = self.query_matrix(x) # (BATCH_SIZE, WINDOW_SIZE, HEAD_SIZE)
-        keys = self.key_matrix(x) # (BATCH_SIZE, WINDOW_SIZE, HEAD_SIZE)
-        values = self.value_matrix(x) # (BATCH_SIZE, WINDOW_SIZE, HEAD_SIZE)
+        self.use_mask = use_mask
 
-        attn_matrix = torch.tril(self.head_size**-0.5 * (queries @ keys.transpose(-2, -1))) # (BATCH_SIZE, WINDOW_SIZE, WINDOW_SIZE)
-        attn_matrix = torch.Tensor.masked_fill(attn_matrix == 0, -np.inf)
-        attn_matrix = F.softmax(attn_matrix, dim=-1)
-        output = attn_matrix @ values # (BATCH_SIZE, WINDOW_SIZE, HEAD_SIZE)
+    def forward(self, input):
+        queries = self.query_matrix(input)     # (batch_size, window_size, head_size)
+        keys = self.key_matrix(input)          # (batch_size, window_size, head_size)
+        values = self.value_matrix(input)      # (batch_size, window_size, head_size)
+        head_size = keys.shape[-1]
+
+        attention_matrix = head_size**-0.5 * (queries @ keys.transpose(-2, -1))     # (batch_size, window_size, window_size)
+        if self.use_mask:
+            attention_matrix = torch.tril(attention_matrix)
+            attention_matrix = torch.Tensor.masked_fill_(attention_matrix == 0, float('-inf'))
+
+        attention_matrix = F.softmax(attention_matrix, dim=-1)
+        output = attention_matrix @ values      # (batch_size, window_size, head_size)
         return output
 
 class MultiHeadedAttention(nn.Module):
-    
-    def __init__(self, head_size, num_heads):
-        super().__init__()
-        self.attn_heads = nn.ModuleList([AttentionHead(head_size) for _ in range(num_heads)])
 
-    def forward(self, x):
-        output = torch.cat([head(x) for head in self.attn_heads], dim=-1)
+    def __init__(self, n_heads, input_size, output_size, use_mask):
+        super().__init__()
+        self.attention_heads = nn.ModuleList([AttentionHead(input_size, output_size // n_heads, use_mask) for _ in range(n_heads)])
+        self.projection = nn.Linear(n_heads*output_size, n_heads*output_size)
+
+    def forward(self, input):
+        output = torch.cat([head(input) for head in self.attention_heads], dim=-1)
+        output = self.projection(output)
         return output
-    
+
 class FeedForward(nn.Module):
 
-    def __init__(self, embed_size):
+    def __init__(self, input_size, output_size):
         super().__init__()
-        self.feed_forward = nn.Linear(embed_size, embed_size)
+        self.feed_forward = nn.Sequential(
+            nn.Linear(input_size, 4*input_size),
+            nn.ReLU(),
+            nn.Linear(4*input_size, output_size)
+        )
 
     def forward(self, x):
         output = self.feed_forward(x)
@@ -111,28 +126,28 @@ class FeedForward(nn.Module):
     
 class TransformerBlock(nn.Module):
 
-    def __init__(self, embed_size, head_size, num_heads):
-        super.__init__()
-        self.attn = MultiHeadedAttention(head_size // num_heads, num_heads)
-        self.layer_norm1 = nn.LayerNorm(embed_size)
-        self.feed_forward = FeedForward(embed_size)
+    def __init__(self, n_heads, embed_size, head_size):
+        super().__init__()
+        self.attention = MultiHeadedAttention(n_heads, embed_size, head_size, True)
+        self.layer_norm1 = nn.LayerNorm(head_size)
+        self.feed_forward = FeedForward(head_size, embed_size)
         self.layer_norm2 = nn.LayerNorm(embed_size)
 
-    def forward(self, x):
-        x += self.attn(x)
-        x += self.layer_norm1(x)
-        x += self.feed_forward(x)
-        x += self.layer_norm2(x)
+    def forward(self, input):
+        output = input + self.attention(input)
+        output += self.layer_norm1(output)
+        output += self.feed_forward(output)
+        output += self.layer_norm2(output)
+        return output
 
-        return x
-    
 class Transformer(nn.Module):
 
     def __init__(self):
-        self.token_embedding = nn.Embedding(NUM_BINS, EMBED_SIZE)
+        super().__init__()
+        self.token_embedding = nn.Embedding(N_CLASSES, EMBED_SIZE)
         self.position_encoding = nn.Embedding(WINDOW_SIZE, EMBED_SIZE)
-        self.blocks = nn.Sequential(*[TransformerBlock(EMBED_SIZE, HEAD_SIZE, NUM_HEADS) for _ in range(NUM_BLOCKS)])
-        self.feed_forward = nn.Linear(EMBED_SIZE, NUM_BINS)
+        self.blocks = nn.Sequential(*[TransformerBlock(N_HEADS, EMBED_SIZE, HEAD_SIZE) for _ in range(N_BLOCKS)])
+        self.feed_forward = nn.Linear(EMBED_SIZE, N_CLASSES)
 
         self.apply(self.init_weights)
 
@@ -142,19 +157,27 @@ class Transformer(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
 
-    def forward(self, x, y):
-        token_embedding = self.token_embedding(x)
-        position_encoding = self.position_encoding(x)
+    def forward(self, input, labels):
+        token_embedding = self.token_embedding(input)
+        position_encoding = self.position_encoding(input)
 
-        x = token_embedding + position_encoding
-        x = self.blocks(x)
-        logits = self.feed_forward(x)
+        input = token_embedding + position_encoding
+        input = self.blocks(input)
+        logits = self.feed_forward(input)
 
         batch_size, window_size, embed_size = logits.shape
         logits = torch.reshape(logits, (batch_size*window_size, embed_size))
-        targets = torch.flatten(targets)
-        loss = F.cross_entropy(logits, targets)
+        labels = torch.flatten(labels)
+        loss = F.cross_entropy(logits, labels)
 
         return logits, loss
 
+# Build and train the model.
 GPTmodel = Transformer()
+optimizer = torch.optim.AdamW(GPTmodel.parameters(), lr=LEARNING_RATE)
+
+for _ in range(EPOCHS):
+    logits, loss = GPTmodel(train_data, ...)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
