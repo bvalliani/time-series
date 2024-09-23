@@ -8,13 +8,13 @@ from torch.nn import functional as F
 
 N_BINS = 10000
 BATCH_SIZE = 256
-WINDOW_SIZE = 512
-EMBED_SIZE = 512
-N_BLOCKS = 6
-N_HEADS = 8
-HEAD_SIZE = 512
+WINDOW_SIZE = 64
+EMBED_SIZE = 256
+N_BLOCKS = 4
+N_HEADS = 4
+HEAD_SIZE = 256
 LEARNING_RATE = 1e-3
-EPOCHS = 1000
+EPOCHS = 5
 
 # ----------------- DATA -----------------
 # STEP 1: Read in CSV file.
@@ -145,24 +145,28 @@ class Transformer(nn.Module):
 
         return logits, loss
 
+train_examples = torch.stack([train_data[i:i+WINDOW_SIZE] for i in range(len(train_data) - WINDOW_SIZE)])
+train_labels = torch.tensor(train_data[WINDOW_SIZE:], dtype=torch.long)
 
-def batch():
-    indices = torch.randint(low=0, high=len(train_data) - WINDOW_SIZE, size=(BATCH_SIZE,))
-    examples = torch.stack([train_data[i:i+WINDOW_SIZE] for i in indices])
-    labels = torch.tensor([train_data[i+WINDOW_SIZE] for i in indices], dtype=torch.long)
-    return examples, labels
-
+test_examples = torch.stack([test_data[i:i+WINDOW_SIZE] for i in range(len(test_data) - WINDOW_SIZE)])
+test_labels = torch.tensor(test_data[WINDOW_SIZE:], dtype=torch.long)
 
 # Build and train the model.
 GPTmodel = Transformer()
 optimizer = torch.optim.AdamW(GPTmodel.parameters(), lr=LEARNING_RATE)
 
 for e in range(EPOCHS):
-    examples, labels = batch()
-    logits, loss = GPTmodel(examples, labels)
-    optimizer.zero_grad(set_to_none=True)
-    torch.autograd.set_detect_anomaly(True)
-    loss.backward()
-    optimizer.step()
+    total_loss = 0
+    for b in range(train_examples.shape[0] // BATCH_SIZE):
+        logits, loss = GPTmodel(train_examples[BATCH_SIZE*b:BATCH_SIZE*(b+1)], train_labels[BATCH_SIZE*b:BATCH_SIZE*(b+1)])
+        total_loss += loss
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-    print(f"Epoch: {e}, Loss: {loss}")
+    avg_loss = total_loss / (train_examples.shape[0] // BATCH_SIZE)
+    print(f"Epoch: {e}, Train Loss: {avg_loss}")
+
+
+logits, loss = GPTmodel(test_examples, test_labels)
+print(f"Test Loss: {loss}")
