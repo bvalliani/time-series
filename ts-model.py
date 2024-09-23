@@ -3,17 +3,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import matplotlib.pyplot as plt
 
 # ------------- HYPERPARAMTERS -------------
 
 N_BINS = 10000
 BATCH_SIZE = 256
-WINDOW_SIZE = 64
+WINDOW_SIZE = 15
 EMBED_SIZE = 256
 N_BLOCKS = 4
 N_HEADS = 4
 HEAD_SIZE = 256
-LEARNING_RATE = 1e-3
+DROPOUT = 0.2
+LEARNING_RATE = 5e-4
 EPOCHS = 5
 
 # ----------------- DATA -----------------
@@ -21,28 +23,28 @@ EPOCHS = 5
 # STEP 2: Extract the column with the temperature.
 # STEP 3: Quantize the data.
 
+
 train_file = read_csv("./data/DailyDelhiClimateTrain.csv")
 test_file = read_csv("./data/DailyDelhiClimateTest.csv")
 
 train_data = np.array(train_file['meantemp'].tolist())
 test_data = np.array(test_file['meantemp'].tolist())
 
-# Quantize training data.
-min = np.floor(np.min(train_data)) - 1e-3
-max = np.ceil(np.max(train_data))
+# Quantize training and testing data.
+data = np.concatenate((train_data, test_data))
+min = np.floor(np.min(data)) - 1e-3
+max = np.ceil(np.max(data))
 step_size = (max - min) / N_BINS
 bins = np.flip(np.arange(start=max, stop=min, step=-step_size))
 train_data = np.digitize(train_data, bins)
-
-# Quantize testing data.
-min = np.floor(np.min(test_data)) - 1e-3
-max = np.ceil(np.max(test_data))
-step_size = (max - min) / N_BINS
-bins = np.flip(np.arange(start=max, stop=min, step=-step_size))
 test_data = np.digitize(test_data, bins)
 
 train_data = torch.tensor(train_data, dtype=torch.long)
 test_data = torch.tensor(test_data, dtype=torch.long)
+
+plt.hist(train_data)
+plt.hist(test_data)
+plt.show()
 
 # ------------------------ MODEL ------------------------
 
@@ -90,7 +92,8 @@ class FeedForward(nn.Module):
         self.feed_forward = nn.Sequential(
             nn.Linear(input_size, 4*input_size),
             nn.ReLU(),
-            nn.Linear(4*input_size, output_size)
+            nn.Linear(4*input_size, output_size),
+            nn.Dropout(DROPOUT)
         )
 
     def forward(self, x):
@@ -156,17 +159,14 @@ GPTmodel = Transformer()
 optimizer = torch.optim.AdamW(GPTmodel.parameters(), lr=LEARNING_RATE)
 
 for e in range(EPOCHS):
-    total_loss = 0
+    total_train_loss = 0
     for b in range(train_examples.shape[0] // BATCH_SIZE):
-        logits, loss = GPTmodel(train_examples[BATCH_SIZE*b:BATCH_SIZE*(b+1)], train_labels[BATCH_SIZE*b:BATCH_SIZE*(b+1)])
-        total_loss += loss
+        train_logits, train_loss = GPTmodel(train_examples[BATCH_SIZE*b:BATCH_SIZE*(b+1)], train_labels[BATCH_SIZE*b:BATCH_SIZE*(b+1)])
+        total_train_loss += train_loss
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        train_loss.backward()
         optimizer.step()
 
-    avg_loss = total_loss / (train_examples.shape[0] // BATCH_SIZE)
-    print(f"Epoch: {e}, Train Loss: {avg_loss}")
-
-
-logits, loss = GPTmodel(test_examples, test_labels)
-print(f"Test Loss: {loss}")
+    avg_loss = total_train_loss / (train_examples.shape[0] // BATCH_SIZE)
+    test_logits, test_loss = GPTmodel(test_examples, test_labels)
+    print(f"Epoch: {e}, Train Loss: {avg_loss}, Test Loss: {test_loss}")
