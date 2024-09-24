@@ -149,9 +149,11 @@ class Transformer(nn.Module):
         return logits, loss
 
 train_examples = torch.stack([train_data[i:i+WINDOW_SIZE] for i in range(len(train_data) - WINDOW_SIZE)])
+n_train_examples = train_examples.shape[0]
 train_labels = torch.tensor(train_data[WINDOW_SIZE:], dtype=torch.long)
 
 test_examples = torch.stack([test_data[i:i+WINDOW_SIZE] for i in range(len(test_data) - WINDOW_SIZE)])
+n_test_examples = test_examples.shape[0]
 test_labels = torch.tensor(test_data[WINDOW_SIZE:], dtype=torch.long)
 
 # Build and train the model.
@@ -160,13 +162,16 @@ optimizer = torch.optim.AdamW(GPTmodel.parameters(), lr=LEARNING_RATE)
 
 for e in range(EPOCHS):
     total_train_loss = 0
-    for b in range(train_examples.shape[0] // BATCH_SIZE):
-        train_logits, train_loss = GPTmodel(train_examples[BATCH_SIZE*b:BATCH_SIZE*(b+1)], train_labels[BATCH_SIZE*b:BATCH_SIZE*(b+1)])
+    idx = torch.randperm(n_train_examples)
+    shuffled_train_examples = train_examples[idx]
+    shuffled_train_labels = train_labels[idx]
+    for b in range(n_train_examples // BATCH_SIZE):
+        train_logits, train_loss = GPTmodel(shuffled_train_examples[BATCH_SIZE*b:BATCH_SIZE*(b+1)], shuffled_train_labels[BATCH_SIZE*b:BATCH_SIZE*(b+1)])
         total_train_loss += train_loss
         optimizer.zero_grad(set_to_none=True)
         train_loss.backward()
         optimizer.step()
 
-    avg_loss = total_train_loss / (train_examples.shape[0] // BATCH_SIZE)
+    avg_loss = total_train_loss / (n_train_examples // BATCH_SIZE)
     test_logits, test_loss = GPTmodel(test_examples, test_labels)
     print(f"Epoch: {e}, Train Loss: {avg_loss}, Test Loss: {test_loss}")
