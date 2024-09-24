@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 N_BINS = 10000
 BATCH_SIZE = 256
-WINDOW_SIZE = 15
+WINDOW_SIZE = 32
 EMBED_SIZE = 256
 N_BLOCKS = 4
 N_HEADS = 4
@@ -23,15 +23,21 @@ EPOCHS = 5
 # STEP 2: Extract the column with the temperature.
 # STEP 3: Quantize the data.
 
+# # DATASET 1: Daily Delhi Climate Data.
+# train_file = read_csv("./data/DailyDelhiClimateTrain.csv")
+# test_file = read_csv("./data/DailyDelhiClimateTest.csv")
 
-train_file = read_csv("./data/DailyDelhiClimateTrain.csv")
-test_file = read_csv("./data/DailyDelhiClimateTest.csv")
+# train_data = np.array(train_file['meantemp'].tolist())
+# test_data = np.array(test_file['meantemp'].tolist())
 
-train_data = np.array(train_file['meantemp'].tolist())
-test_data = np.array(test_file['meantemp'].tolist())
+# DATASET 2: Daily Min Temperatures.
+file = read_csv("./data/daily-min-temperatures.csv")
+data = np.array(file['Temp'].tolist())
+train_data = data[:int(0.9*len(data))]
+test_data = data[int(0.9*len(data)):]
 
 # Quantize training and testing data.
-data = np.concatenate((train_data, test_data))
+# data = np.concatenate((train_data, test_data)) # For Dataset 1.
 min = np.floor(np.min(data)) - 1e-3
 max = np.ceil(np.max(data))
 step_size = (max - min) / N_BINS
@@ -79,10 +85,12 @@ class MultiHeadedAttention(nn.Module):
         super().__init__()
         self.attention_heads = nn.ModuleList([AttentionHead(input_size, output_size // n_heads, use_mask) for _ in range(n_heads)])
         self.projection = nn.Linear(output_size, output_size)
+        self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, input):
         output = torch.cat([head(input) for head in self.attention_heads], dim=-1)
         output = self.projection(output)
+        output = self.dropout(output)
         return output
 
 class FeedForward(nn.Module):
